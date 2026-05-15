@@ -14,6 +14,8 @@ from app.services.subscription_service import subscription_service
 from app.services.archive_service import archive_service
 from app.services.offline_monitor_service import offline_monitor_service
 
+from app.core.timezone_utils import beijing_now
+
 
 class JobRegistry:
     def __init__(self):
@@ -29,9 +31,7 @@ class JobRegistry:
             "system.archive_scan": self._archive_scan,
             "system.offline_monitor": self._offline_monitor,
             "hdhive.checkin": self._hdhive_checkin,
-            "subscription.check_hdhive": self._check_subscription_hdhive,
-            "subscription.check_pansou": self._check_subscription_pansou,
-            "subscription.check_tg": self._check_subscription_tg,
+            "subscription.check": self._check_subscription,
             "chart_subscription.sync": self._chart_subscription_sync,
             "tg.index.incremental": self._tg_index_incremental,
         }
@@ -80,7 +80,7 @@ class JobRegistry:
         await asyncio.sleep(0)
         return {
             "success": True,
-            "message": f"noop executed at {datetime.utcnow().isoformat()}",
+            "message": f"noop executed at {beijing_now().isoformat()}",
         }
 
     async def _archive_scan(self, **kwargs) -> dict[str, Any]:
@@ -162,14 +162,8 @@ class JobRegistry:
             async with self._subscription_lock:
                 self._running_channels.pop(channel, None)
 
-    async def _check_subscription_pansou(self, **kwargs) -> dict[str, Any]:
-        return await self._check_subscription_channel("pansou")
-
-    async def _check_subscription_hdhive(self, **kwargs) -> dict[str, Any]:
-        return await self._check_subscription_channel("hdhive")
-
-    async def _check_subscription_tg(self, **kwargs) -> dict[str, Any]:
-        return await self._check_subscription_channel("tg")
+    async def _check_subscription(self, **kwargs) -> dict[str, Any]:
+        return await self._check_subscription_channel("all")
 
     async def _chart_subscription_sync(self, **kwargs) -> dict[str, Any]:
         from app.services.chart_subscription_service import run_chart_subscription

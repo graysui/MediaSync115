@@ -10,6 +10,7 @@ from uuid import uuid4
 from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timezone_utils import beijing_now
 from app.models.models import (
     DownloadRecord,
     ExecutionStatus,
@@ -53,7 +54,7 @@ class SubscriptionService:
     ) -> dict[str, Any]:
         normalized_channel = self._normalize_channel(channel)
         run_id = uuid4().hex
-        started_at = datetime.utcnow()
+        started_at = beijing_now()
         await operation_log_service.log_background_event(
             source_type="background_task",
             module="subscriptions",
@@ -135,6 +136,7 @@ class SubscriptionService:
             SubscriptionSnapshot(
                 id=int(row.id),
                 tmdb_id=int(row.tmdb_id) if row.tmdb_id is not None else None,
+                douban_id=str(row.douban_id) if row.douban_id is not None else None,
                 title=str(row.title or ""),
                 media_type=row.media_type,
                 year=str(row.year) if row.year is not None else None,
@@ -711,7 +713,7 @@ class SubscriptionService:
             unlock_stats.get("points_spent") or 0
         )
         message = self._build_message(result)
-        finished_at = datetime.utcnow()
+        finished_at = beijing_now()
         result["finished_at"] = finished_at.isoformat()
         result["status"] = status.value
         result["message"] = message
@@ -2659,7 +2661,7 @@ class SubscriptionService:
                         wp_path_id=offline_folder_id,
                     )
                     record.status = MediaStatus.OFFLINE_SUBMITTED
-                    record.offline_submitted_at = datetime.utcnow()
+                    record.offline_submitted_at = beijing_now()
                     record.offline_status = "submitted"
                     record.offline_info_hash = (
                         self._extract_offline_info_hash(offline_result)
@@ -2933,7 +2935,7 @@ class SubscriptionService:
                         quality_filter=quality_filter,
                     )
                     record.status = MediaStatus.COMPLETED
-                    record.completed_at = datetime.utcnow()
+                    record.completed_at = beijing_now()
                     record.error_message = None
                     record.file_id = parent_folder_id
                     saved += 1
@@ -3014,7 +3016,7 @@ class SubscriptionService:
                         record.completed_at = None
                     else:
                         record.status = MediaStatus.COMPLETED
-                        record.completed_at = datetime.utcnow()
+                        record.completed_at = beijing_now()
                     record.error_message = None
                     saved += 1
                     await self._create_step_log(
@@ -3490,6 +3492,38 @@ class SubscriptionService:
         return "，".join(parts)
 
 
+    async def fetch_resources_for_media(
+        self,
+        media_type: str,
+        tmdb_id: int | None = None,
+        douban_id: str | None = None,
+        title: str = "",
+        year: str | None = None,
+        season_number: int | None = None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+        """供手动转存等场景调用的统一资源获取入口，复用 _fetch_resources 管道。"""
+        from app.models.models import MediaType
+
+        mt = MediaType.TV if media_type == "tv" else MediaType.MOVIE
+        snapshot = SubscriptionSnapshot(
+            id=0,
+            tmdb_id=tmdb_id,
+            douban_id=douban_id,
+            title=title or "",
+            media_type=mt,
+            year=year,
+            auto_download=False,
+            tv_scope="all",
+            tv_season_number=season_number,
+            tv_episode_start=None,
+            tv_episode_end=None,
+            tv_follow_mode="missing",
+            tv_include_specials=False,
+            has_successful_transfer=False,
+        )
+        return await self._fetch_resources(channel="all", sub=snapshot)
+
+
 subscription_service = SubscriptionService()
 
 
@@ -3497,6 +3531,7 @@ subscription_service = SubscriptionService()
 class SubscriptionSnapshot:
     id: int
     tmdb_id: int | None
+    douban_id: str | None
     title: str
     media_type: MediaType
     year: str | None

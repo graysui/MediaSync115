@@ -6,11 +6,13 @@
 import asyncio
 import random
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Set
 from uuid import uuid4
 
 from app.core.config import settings
+
+from app.core.timezone_utils import beijing_now
 
 P115Client = None
 _P115CLIENT_IMPORT_ERROR = ""
@@ -1095,6 +1097,96 @@ class Pan115Service:
         value = str(filename or "").strip().lower()
         return bool(value) and value.endswith(VIDEO_FILE_EXTENSIONS)
 
+    _CORE_NAME_TAG_PATTERNS: list[str] | None = None
+
+    @classmethod
+    def _extract_core_name(cls, filename: str) -> str:
+        """提取文件的核心名称，去掉画质、编码、音轨等标签，用于判断是否为同一影片。"""
+        name = str(filename or "").strip()
+        # 去掉扩展名
+        for ext in VIDEO_FILE_EXTENSIONS:
+            if name.lower().endswith(ext):
+                name = name[: -len(ext)]
+                break
+        # 中英文数字交界处插入空格，确保 \b 在两者间生效
+        name = re.sub(
+            r"(?<=[a-zA-Z0-9])(?=[\u4e00-\u9fff])|(?<=[\u4e00-\u9fff])(?=[a-zA-Z0-9])",
+            " ",
+            name,
+        )
+        # 去掉括号字符，保留内容
+        name = re.sub(r"[\[\]\(\)]", " ", name)
+        # 去掉画质/编码/音轨/来源等标签（在规范化分隔符之前执行，以便匹配 web-dl、dts-hd 等）
+        if cls._CORE_NAME_TAG_PATTERNS is None:
+            cls._CORE_NAME_TAG_PATTERNS = [
+                # 分辨率
+                r"\b(?:8k|4320p)\b",
+                r"\b(?:4k|2160p|uhd)\b",
+                r"\b(?:1440p|2k|qhd)\b",
+                r"\b(?:1080p|fhd|full[\s.\-]*hd)\b",
+                r"\b720p\b",
+                r"\b(?:480p|sd)\b",
+                # HDR
+                r"\b(?:dolby[\s.\-]*vision|dovi|dv|hdr10\+|hdr10|hdr|sdr)\b",
+                # 编码
+                r"\b(?:hevc|h[\s.\-]*265|x265|avc|h[\s.\-]*264|x264|mpeg[\s.\-]*4|divx|xvid|vp9|av1)\b",
+                # 来源
+                r"\b(?:remux|bdremux|blu[\s.\-]*ray|bdrip|bd|web[\s.\-]*dl|webdl|webrip|hdtv|hdrip|dvdrip|dvd|tvrip|satrip|vhsrip|amzn|nf|dsnp|hulu|atvp|ma|peacock)\b",
+                # 音轨
+                r"\b(?:dts[\s.\-]*hd[\s.\-]*ma|dts[\s.\-]*hd|dts[\s.\-]*x|dts|truehd|atmos|ddp?\d?\s*(?:\.\d\s*)?|ac3|aac|eac3|flac|pcm|opus|vorbis|mp3|wma|dolby[\s.\-]*digital)\b",
+                # 声道 / 位深 / 帧率
+                r"\b\d{1,2}\s*[.\-]\s*\d{1,2}\b",
+                r"\b\d+bit\b",
+                r"\b(?:60fps|30fps|24fps|50fps|120fps)\b",
+                # 其他版本标签
+                r"\b(?:proper|repack|extended|uncut|directors?\s*cut|theatrical|unrated|remastered|criterion|imax|open[\s.\-]*matte|colorized|black[\s.\-]*and[\s.\-]*white)\b",
+            ]
+            cls._CHINESE_TAGS = (
+                "导演剪辑版",
+                "公映版",
+                "完整版",
+                "无删减",
+                "未删减",
+                "纯净版",
+                "加长版",
+                "硬字幕",
+                "软字幕",
+                "高码率",
+                "高码",
+                "低码",
+                "原盘",
+                "国配",
+                "粤配",
+                "台配",
+                "中字",
+                "内封",
+                "内嵌",
+                "字幕",
+                "官方",
+            )
+            cls._CHINESE_TAGS_PATTERN = re.compile(
+                "|".join(re.escape(tag) for tag in cls._CHINESE_TAGS)
+            )
+        for pattern in cls._CORE_NAME_TAG_PATTERNS:
+            name = re.sub(pattern, "", name, flags=re.IGNORECASE)
+        # 中文版本标签（简单字符串匹配，从长到短贪心去除，避免中文字间的边界问题）
+        name = cls._CHINESE_TAGS_PATTERN.sub("", name)
+        # 规范化剩余分隔符为空格
+        name = re.sub(r"[.\-_]+", " ", name)
+        # 合并空白
+        name = re.sub(r"\s+", " ", name).strip()
+        return name.lower()
+        for pattern in cls._CORE_NAME_TAG_PATTERNS:
+            name = re.sub(pattern, "", name, flags=re.IGNORECASE)
+        # 去掉空的方括号/圆括号
+        name = re.sub(r"\[\s*\]|\(\s*\)", " ", name)
+        # 去掉只剩标签内容的括号（内容被上面的规则清空后括号变空）
+        name = re.sub(r"\[[^\[\]]{0,40}\]", " ", name)
+        name = re.sub(r"\([^\(\)]{0,40}\)", " ", name)
+        # 合并空白
+        name = re.sub(r"\s+", " ", name).strip()
+        return name.lower()
+
     @staticmethod
     def _extract_share_file_size(item: dict[str, Any]) -> int:
         """从 115 分享文件项中提取字节大小"""
@@ -1208,7 +1300,7 @@ class Pan115Service:
         cls, files: list[dict[str, Any]],
         quality_filter: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """多视频分享只转存画质最好的一个视频文件，支持按用户质量偏好筛选和评分。"""
+        """多视频分享：同一影片只转存画质最好的一个；合集则全部转存。"""
 
         video_files = [
             item
@@ -1217,17 +1309,41 @@ class Pan115Service:
             and cls._is_video_file_name(str(item.get("name") or item.get("n") or ""))
         ]
         if len(video_files) <= 1:
-            return files
+            return video_files
 
-        if quality_filter:
-            from app.utils.resource_tags import filter_and_sort_by_quality
+        core_names = {
+            cls._extract_core_name(str(v.get("name") or v.get("n") or "")): []
+            for v in video_files
+        }
+        for v in video_files:
+            name = str(v.get("name") or v.get("n") or "")
+            core_names.setdefault(cls._extract_core_name(name), []).append(v)
 
-            filtered = filter_and_sort_by_quality(video_files, **quality_filter)
-            if filtered:
-                return [filtered[0]]
-            # 如果过滤后没有匹配的文件，降级使用原来的评分逻辑
-        best = cls.pick_best_video_file(video_files)
-        return [best] if best else files
+        if len(core_names) <= 1:
+            # 所有文件核心名称一致 → 同一影片多个版本，只取画质最好的
+            if quality_filter:
+                from app.utils.resource_tags import filter_and_sort_by_quality
+
+                filtered = filter_and_sort_by_quality(video_files, **quality_filter)
+                if filtered:
+                    return [filtered[0]]
+            best = cls.pick_best_video_file(video_files)
+            return [best] if best else video_files
+
+        # 核心名称不同 → 合集资源，每个核心名称各取画质最高的一个
+        selected: list[dict[str, Any]] = []
+        for group in core_names.values():
+            if len(group) == 1:
+                selected.append(group[0])
+            elif quality_filter:
+                from app.utils.resource_tags import filter_and_sort_by_quality
+
+                filtered = filter_and_sort_by_quality(group, **quality_filter)
+                selected.append(filtered[0] if filtered else group[0])
+            else:
+                best = cls.pick_best_video_file(group)
+                selected.append(best if best else group[0])
+        return selected
 
     async def start_qr_login(self, app: str = "alipaymini") -> Dict[str, Any]:
         """
@@ -1257,7 +1373,7 @@ class Pan115Service:
             qr_url = f"https://115.com/scan/dg-{uid}"
 
         token = uuid4().hex
-        now = datetime.now(timezone.utc)
+        now = beijing_now()
         expires_at = now + timedelta(seconds=self._QR_LOGIN_EXPIRE_SECONDS)
         async with self._QR_LOGIN_LOCK:
             self._QR_LOGIN_PENDING[token] = {
@@ -1318,7 +1434,7 @@ class Pan115Service:
         if not item:
             raise ValueError("扫码会话不存在或已过期，请重新生成二维码")
 
-        now = datetime.now(timezone.utc)
+        now = beijing_now()
         expires_at = item.get("expires_at")
         if isinstance(expires_at, datetime) and now >= expires_at:
             async with self._QR_LOGIN_LOCK:
@@ -1478,7 +1594,7 @@ class Pan115Service:
 
     @classmethod
     async def _clear_expired_qr_sessions(cls) -> None:
-        now = datetime.now(timezone.utc)
+        now = beijing_now()
         async with cls._QR_LOGIN_LOCK:
             expired = []
             for token, item in cls._QR_LOGIN_PENDING.items():
@@ -1585,9 +1701,9 @@ class Pan115Service:
         Returns:
             分享码，如果无法提取则返回None
         """
-        # 尝试匹配常见分享链接（115.com / 115cdn.com / share.115.com）
+        # 尝试匹配常见分享链接（115.com / 115cdn.com / share.115.com / anxia.com）
         match = re.search(
-            r"(?:115(?:cdn)?\.com/s/|share\.115\.com/)([a-zA-Z0-9]+)", share_url
+            r"(?:115(?:cdn)?\.com/s/|share\.115\.com/|anxia\.com/s/)([a-zA-Z0-9]+)", share_url
         )
         if match:
             return match.group(1)
