@@ -24,6 +24,11 @@ class StrmConfigRequest(BaseModel):
     strm_proxy_port: Optional[int] = None
 
 
+class StrmGenerateRequest(BaseModel):
+    source_cid: Optional[str] = None
+    source_name: Optional[str] = None
+
+
 def _raise_strm_error(exc: Exception) -> None:
     error_msg = str(exc or "")
     if isinstance(exc, ValueError):
@@ -91,9 +96,14 @@ async def update_strm_config(payload: StrmConfigRequest):
 
 
 @router.post("/generate")
-async def generate_strm_files():
+async def generate_strm_files(payload: StrmGenerateRequest | None = None):
     try:
-        return await strm_service.start_generate_library(trigger="manual")
+        payload_data = payload.model_dump(exclude_unset=True) if payload else {}
+        return await strm_service.start_generate_library(
+            trigger="manual",
+            source_cid=payload_data.get("source_cid"),
+            source_name=payload_data.get("source_name"),
+        )
     except Exception as exc:
         _raise_strm_error(exc)
 

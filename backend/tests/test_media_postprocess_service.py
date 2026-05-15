@@ -40,8 +40,15 @@ class TestMediaPostprocessService:
 
         called: dict[str, str] = {}
 
-        async def fake_start_generate_library(trigger: str = "manual") -> dict:
+        async def fake_start_generate_library(
+            trigger: str = "manual",
+            *,
+            source_cid: str | None = None,
+            source_name: str | None = None,
+        ) -> dict:
             called["trigger"] = trigger
+            called["source_cid"] = source_cid or ""
+            called["source_name"] = source_name or ""
             return {"success": True, "started": True}
 
         monkeypatch.setattr(

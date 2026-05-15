@@ -279,7 +279,7 @@ export const archiveApi = {
 export const strmApi = {
   getConfig: () => api.get('/strm/config'),
   updateConfig: (payload) => api.put('/strm/config', payload),
-  generate: () => api.post('/strm/generate', null, { timeout: 300000 }),
+  generate: (payload = null) => api.post('/strm/generate', payload, { timeout: 300000 }),
   diagnose: () => api.get('/strm/diagnose', { timeout: 30000 })
 }
 

@@ -3,29 +3,24 @@
     <div class="page-header">
       <div>
         <h2>STRM 设置</h2>
-        <p class="page-subtitle">镜像 115 归档输出目录，生成可被 Emby、飞牛影视和支持 HTTP STRM 的播放器直接挂载的 `.strm` 文件。</p>
+        <p class="page-subtitle">保留原有归档输出目录生成逻辑，额外支持临时指定一个 115 源目录并手动运行。</p>
       </div>
       <div class="header-actions">
         <el-button :loading="refreshing" @click="refreshAll">刷新</el-button>
       </div>
     </div>
 
-    <el-alert
-      title="兼容性前提"
-      type="info"
-      :closable="false"
-      show-icon
-      class="tip-alert"
-      description="STRM 文件里只会写一个播放地址，所以这个地址必须对播放器所在网络可达。如果既要内网也要公网共用同一套 STRM，建议使用固定域名/DDNS，并在内网配合回环 NAT 或 split DNS。"
-    />
-
     <el-card class="section-card">
       <template #header>
         <div class="card-title-row">
           <span class="card-title">STRM 配置</span>
           <div class="status-tags">
-            <el-tag :type="config.strm_enabled ? 'success' : 'info'">{{ config.strm_enabled ? '已启用' : '未启用' }}</el-tag>
-            <el-tag :type="runtime.generate_running ? 'warning' : 'info'">{{ runtime.generate_running ? '生成中' : '空闲' }}</el-tag>
+            <el-tag :type="config.strm_enabled ? 'success' : 'info'">
+              {{ config.strm_enabled ? '已启用' : '未启用' }}
+            </el-tag>
+            <el-tag :type="runtime.generate_running ? 'warning' : 'info'">
+              {{ runtime.generate_running ? '运行中' : '空闲' }}
+            </el-tag>
           </div>
         </div>
       </template>
@@ -40,9 +35,8 @@
             <el-select v-model="config.strm_redirect_mode" style="width: 220px">
               <el-option label="自动（推荐）" value="auto" />
               <el-option label="302 直链播放" value="redirect" />
-              <el-option label="服务器代理" value="proxy" />
+              <el-option label="服务端代理" value="proxy" />
             </el-select>
-            <div class="form-hint">302 直链会绑定当前播放器的 User-Agent；如果 115 链接要求额外 Cookie（f=3），系统会自动回退代理。</div>
           </el-form-item>
 
           <el-form-item label="生成后刷新 Emby">
@@ -70,28 +64,26 @@
                 :disabled="!item.writable"
               />
             </el-select>
-            <div class="form-hint">列表为容器内已挂载的可写路径，也可手动输入其他路径。Docker 部署时建议选 `/app/strm`。</div>
           </el-form-item>
 
           <el-form-item label="播放根地址" class="grid-span-2">
-            <el-input v-model="config.strm_base_url" :placeholder="suggestedBaseUrl || '例如：http://192.168.1.100:9008'" />
-            <div class="form-hint">STRM 播放地址使用端口 `9008`。系统会自动拼出 `/api/strm/play/&lt;token&gt;`。</div>
+            <el-input
+              v-model="config.strm_base_url"
+              :placeholder="suggestedBaseUrl || '例如：http://192.168.1.100:9008'"
+            />
           </el-form-item>
 
-          <el-form-item label="Emby 代理">
+          <el-form-item label="代理模式">
             <el-switch v-model="config.strm_proxy_enabled" />
-            <div class="form-hint">启用后 STRM 文件将指向代理端口，Emby 客户端连接 `:&lt;代理端口&gt;` 即可统一管理播放与 302 跳转。</div>
           </el-form-item>
 
           <el-form-item v-if="config.strm_proxy_enabled" label="代理端口">
             <el-input-number v-model="config.strm_proxy_port" :min="1024" :max="65535" :step="1" style="width: 160px" />
-            <div class="form-hint">默认为 8099。Emby 客户端请连接此端口的代理地址。</div>
           </el-form-item>
         </div>
 
         <div class="config-actions">
           <el-button type="primary" :loading="saving" @click="saveConfig">保存配置</el-button>
-          <el-button type="warning" :loading="generating" @click="generateFiles">立即生成</el-button>
           <el-button :loading="diagnosing" @click="diagnoseStrm">STRM 诊断</el-button>
         </div>
       </el-form>
@@ -99,8 +91,32 @@
 
     <el-card class="section-card">
       <template #header>
-        <div class="card-title">运行状态</div>
+        <div class="card-title-row">
+          <span class="card-title">生成操作</span>
+          <div class="status-tags">
+            <el-tag :type="runtime.queue_waiting_count > 0 ? 'warning' : 'info'">队列 {{ runtime.queue_waiting_count }}</el-tag>
+            <el-tag :type="runtime.active_task ? 'success' : 'info'">当前 {{ activeTaskText }}</el-tag>
+          </div>
+        </div>
       </template>
+
+      <div class="source-block">
+        <div class="source-meta">
+          <div class="source-title">临时指定源目录</div>
+          <div class="source-subtitle">只保存在浏览器本地，刷新页面后仍保留，手动清空后移除。</div>
+        </div>
+
+        <div class="source-row">
+          <el-input v-model="sourceDir.name" placeholder="目录名称" class="source-name" @change="persistSourceDir" />
+          <el-input v-model="sourceDir.cid" placeholder="目录 CID" class="source-cid" @change="persistSourceDir" />
+          <el-button :disabled="!sourceDir.cid" @click="clearSourceDir">清空</el-button>
+        </div>
+      </div>
+
+      <div class="config-actions">
+        <el-button type="warning" :loading="generatingDefault" @click="generateDefaultFiles">默认生成</el-button>
+        <el-button type="primary" :disabled="!sourceDir.cid" :loading="generatingSource" @click="generateSourceFiles">指定源生成</el-button>
+      </div>
 
       <div class="status-grid">
         <div class="status-item">
@@ -108,16 +124,16 @@
           <span class="status-value">{{ config.archive_output_name || config.archive_output_cid || '未配置' }}</span>
         </div>
         <div class="status-item">
-          <span class="status-label">播放模式</span>
-          <span class="status-value">{{ redirectModeLabel }}</span>
+          <span class="status-label">临时源目录</span>
+          <span class="status-value">{{ sourceDir.name || sourceDir.cid || '未选择' }}</span>
         </div>
         <div class="status-item status-item-full">
-          <span class="status-label">输出目录</span>
-          <span class="status-value">{{ config.strm_output_dir || '未配置' }}</span>
+          <span class="status-label">队列顺序</span>
+          <span class="status-value">{{ runtime.queue_waiting_count > 0 ? `前方还有 ${runtime.queue_waiting_count} 个任务等待` : '当前没有等待中的任务' }}</span>
         </div>
         <div class="status-item status-item-full">
-          <span class="status-label">播放地址模板</span>
-          <span class="status-value break-all">{{ playUrlTemplate }}</span>
+          <span class="status-label">当前任务</span>
+          <span class="status-value">{{ activeTaskText }}</span>
         </div>
         <div class="status-item">
           <span class="status-label">开始时间</span>
@@ -136,45 +152,31 @@
           <span class="status-value status-error">{{ runtime.last_generate_error }}</span>
         </div>
       </div>
+    </el-card>
 
-      <div v-if="diagnosis" class="diagnosis-block">
-        <el-divider />
+    <el-card v-if="diagnosis" class="section-card">
+      <template #header>
         <div class="card-title">STRM 诊断</div>
-        <el-descriptions :column="2" border size="small">
-          <el-descriptions-item label="样本文件">
-            <span class="break-all">{{ diagnosis.sample_file || '-' }}</span>
-          </el-descriptions-item>
-          <el-descriptions-item label="当前 UA">
-            <span class="break-all">{{ diagnosis.player_user_agent || '空' }}</span>
-          </el-descriptions-item>
-          <el-descriptions-item label="配置模式">
-            {{ getModeLabel(diagnosis.configured_mode) }}
-          </el-descriptions-item>
-          <el-descriptions-item label="实际模式">
-            {{ getModeLabel(diagnosis.effective_mode) }}
-          </el-descriptions-item>
-          <el-descriptions-item label="115 要求">
-            {{ getRequirementLabel(diagnosis.direct_requirement) }}
-          </el-descriptions-item>
-          <el-descriptions-item label="直链探测">
-            {{ getProbeText(diagnosis.direct_probe) }}
-          </el-descriptions-item>
-          <el-descriptions-item label="样本链接">
-            <span class="break-all">{{ diagnosis.sample_url || '-' }}</span>
-          </el-descriptions-item>
-          <el-descriptions-item label="115 直链">
-            <span class="break-all">{{ diagnosis.download_url || '-' }}</span>
-          </el-descriptions-item>
-        </el-descriptions>
-        <el-alert
-          :closable="false"
-          type="info"
-          show-icon
-          class="diagnosis-alert"
-          :title="diagnosis.reason || '已完成 STRM 诊断'"
-          :description="diagnosis.note || ''"
-        />
-      </div>
+      </template>
+      <el-descriptions :column="2" border size="small">
+        <el-descriptions-item label="样本文件">
+          <span class="break-all">{{ diagnosis.sample_file || '-' }}</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="当前 UA">
+          <span class="break-all">{{ diagnosis.player_user_agent || '空' }}</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="配置模式">{{ getModeLabel(diagnosis.configured_mode) }}</el-descriptions-item>
+        <el-descriptions-item label="实际模式">{{ getModeLabel(diagnosis.effective_mode) }}</el-descriptions-item>
+        <el-descriptions-item label="115 要求">{{ getRequirementLabel(diagnosis.direct_requirement) }}</el-descriptions-item>
+        <el-descriptions-item label="直链探测">{{ getProbeText(diagnosis.direct_probe) }}</el-descriptions-item>
+        <el-descriptions-item label="样本链接">
+          <span class="break-all">{{ diagnosis.sample_url || '-' }}</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="115 直链">
+          <span class="break-all">{{ diagnosis.download_url || '-' }}</span>
+        </el-descriptions-item>
+      </el-descriptions>
+      <el-alert :closable="false" type="info" show-icon class="diagnosis-alert" :title="diagnosis.reason || '诊断完成'" :description="diagnosis.note || ''" />
     </el-card>
   </div>
 </template>
@@ -187,12 +189,18 @@ import { formatBeijingTableCell } from '@/utils/timezone'
 
 const refreshing = ref(false)
 const saving = ref(false)
-const generating = ref(false)
+const generatingDefault = ref(false)
+const generatingSource = ref(false)
 const diagnosing = ref(false)
 const mountPaths = ref([])
 const suggestedBaseUrl = ref('')
 const diagnosis = ref(null)
 let pollingTimer = null
+
+const sourceDir = reactive({
+  cid: localStorage.getItem('mediasync115.strm.source_cid') || '',
+  name: localStorage.getItem('mediasync115.strm.source_name') || ''
+})
 
 const config = reactive({
   strm_enabled: false,
@@ -209,6 +217,8 @@ const config = reactive({
 
 const runtime = reactive({
   generate_running: false,
+  queue_waiting_count: 0,
+  active_task: null,
   last_generate_started_at: '',
   last_generate_finished_at: '',
   last_generate_error: '',
@@ -216,37 +226,30 @@ const runtime = reactive({
   last_generate_trigger: ''
 })
 
-const redirectModeLabel = computed(() => {
-  if (config.strm_redirect_mode === 'redirect') return '302 直链播放'
-  if (config.strm_redirect_mode === 'proxy') return '服务器代理'
-  return '自动（推荐）'
-})
-
-const playUrlTemplate = computed(() => {
-  if (!config.strm_base_url) return '未配置'
-  let base = config.strm_base_url.replace(/\/$/, '')
-  if (config.strm_proxy_enabled) {
-    const url = new URL(base)
-    base = `${url.protocol}//${url.hostname}:${config.strm_proxy_port || 8099}`
+const activeTaskText = computed(() => {
+  const task = runtime.active_task
+  if (!task) return '无'
+  if (task.mode === 'source') {
+    return `指定源 ${task.source_name || task.source_cid || '-'}`
   }
-  return `${base}/api/strm/play/<token>`
+  return `默认生成 ${task.output_cid || '-'}` 
 })
 
 const summaryText = computed(() => {
   const summary = runtime.last_generate_summary
   if (!summary) return '暂无生成记录'
-  return `扫描 ${summary.scanned_video_count || 0} 个视频，写入 ${summary.written_count || 0} 个，未改动 ${summary.unchanged_count || 0} 个，删除 ${summary.removed_count || 0} 个`
+  return `扫描 ${summary.scanned_video_count || 0} 个视频，写入 ${summary.written_count || 0} 个，未变更 ${summary.unchanged_count || 0} 个，删除 ${summary.removed_count || 0} 个`
 })
 
 const getModeLabel = (mode) => {
   if (mode === 'redirect') return '302 直链播放'
-  if (mode === 'proxy') return '服务器代理'
+  if (mode === 'proxy') return '服务端代理'
   return '自动（推荐）'
 }
 
 const getRequirementLabel = (requirement) => {
-  if (requirement === '1') return 'f=1，要求绑定 User-Agent'
-  if (requirement === '3') return 'f=3，要求额外 Cookie'
+  if (requirement === '1') return 'f=1，需要绑定 User-Agent'
+  if (requirement === '3') return 'f=3，需要额外 Cookie'
   return '无特殊要求'
 }
 
@@ -260,7 +263,7 @@ const getProbeText = (probe) => {
 }
 
 const applyConfig = (data) => {
-  const wasGenerating = runtime.generate_running || generating.value
+  const wasGenerating = runtime.generate_running || generatingDefault.value || generatingSource.value
 
   config.strm_enabled = !!data.strm_enabled
   config.strm_output_dir = data.strm_output_dir || ''
@@ -277,20 +280,22 @@ const applyConfig = (data) => {
 
   const nextRuntime = data.runtime || {}
   runtime.generate_running = !!nextRuntime.generate_running
+  runtime.queue_waiting_count = Number(nextRuntime.queue_waiting_count) || 0
+  runtime.active_task = nextRuntime.active_task || null
   runtime.last_generate_started_at = nextRuntime.last_generate_started_at || ''
   runtime.last_generate_finished_at = nextRuntime.last_generate_finished_at || ''
   runtime.last_generate_error = nextRuntime.last_generate_error || ''
   runtime.last_generate_summary = nextRuntime.last_generate_summary || null
   runtime.last_generate_trigger = nextRuntime.last_generate_trigger || ''
 
-  generating.value = runtime.generate_running
+  generatingDefault.value = runtime.generate_running && (!runtime.active_task || runtime.active_task.mode !== 'source')
+  generatingSource.value = runtime.generate_running && runtime.active_task?.mode === 'source'
+
   if (wasGenerating && !runtime.generate_running) {
     if (runtime.last_generate_error) {
       ElMessage.error(runtime.last_generate_error)
     } else if (runtime.last_generate_summary) {
-      ElMessage.success(
-        `STRM 后台生成完成：写入 ${runtime.last_generate_summary.written_count || 0} 个，删除 ${runtime.last_generate_summary.removed_count || 0} 个`
-      )
+      ElMessage.success('STRM 生成完成')
     }
   }
 }
@@ -330,16 +335,45 @@ const saveConfig = async () => {
   }
 }
 
-const generateFiles = async () => {
-  generating.value = true
+const persistSourceDir = () => {
+  localStorage.setItem('mediasync115.strm.source_cid', sourceDir.cid || '')
+  localStorage.setItem('mediasync115.strm.source_name', sourceDir.name || '')
+}
+
+const clearSourceDir = () => {
+  sourceDir.cid = ''
+  sourceDir.name = ''
+  localStorage.removeItem('mediasync115.strm.source_cid')
+  localStorage.removeItem('mediasync115.strm.source_name')
+}
+
+const generateDefaultFiles = async () => {
+  generatingDefault.value = true
   try {
     const { data } = await strmApi.generate()
-    ElMessage.success(data.started ? 'STRM 后台生成任务已启动' : 'STRM 生成任务已提交')
+    ElMessage.success(data.message || '默认 STRM 任务已提交')
     await loadConfig()
-    setupPolling()
-  } catch (error) {
-    generating.value = false
-    throw error
+  } finally {
+    generatingDefault.value = false
+  }
+}
+
+const generateSourceFiles = async () => {
+  if (!sourceDir.cid) {
+    ElMessage.warning('请先填写指定源目录 CID')
+    return
+  }
+  persistSourceDir()
+  generatingSource.value = true
+  try {
+    const { data } = await strmApi.generate({
+      source_cid: sourceDir.cid,
+      source_name: sourceDir.name
+    })
+    ElMessage.success(data.message || '指定源 STRM 任务已提交')
+    await loadConfig()
+  } finally {
+    generatingSource.value = false
   }
 }
 
@@ -363,16 +397,16 @@ const stopPolling = () => {
 
 const setupPolling = () => {
   stopPolling()
-  if (!runtime.generate_running) return
+  if (!runtime.generate_running && runtime.queue_waiting_count <= 0 && !runtime.active_task) return
   pollingTimer = setInterval(async () => {
     try {
       const { data } = await strmApi.getConfig()
       applyConfig(data)
-      if (!data.runtime?.generate_running) {
+      if (!data.runtime?.generate_running && Number(data.runtime?.queue_waiting_count || 0) <= 0 && !data.runtime?.active_task) {
         stopPolling()
       }
-    } catch (error) {
-      console.error('Failed to poll STRM status:', error)
+    } catch {
+      stopPolling()
     }
   }, 4000)
 }
@@ -411,12 +445,8 @@ onBeforeUnmount(stopPolling)
   gap: 12px;
 }
 
-.tip-alert {
-  margin-top: -4px;
-}
-
 .section-card {
-  border-radius: 18px;
+  border-radius: 8px;
 }
 
 .card-title-row {
@@ -433,6 +463,7 @@ onBeforeUnmount(stopPolling)
 .status-tags {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .config-grid {
@@ -452,11 +483,43 @@ onBeforeUnmount(stopPolling)
   flex-wrap: wrap;
 }
 
-.form-hint {
-  margin-top: 6px;
+.source-block {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.source-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.source-title {
+  font-weight: 600;
+}
+
+.source-subtitle,
+.status-label {
   font-size: 12px;
   color: var(--el-text-color-secondary);
-  line-height: 1.5;
+}
+
+.source-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.source-name {
+  width: 200px;
+}
+
+.source-cid {
+  flex: 1;
+  min-width: 220px;
 }
 
 .status-grid {
@@ -470,7 +533,7 @@ onBeforeUnmount(stopPolling)
   flex-direction: column;
   gap: 6px;
   padding: 14px 16px;
-  border-radius: 14px;
+  border-radius: 8px;
   background: var(--el-fill-color-light);
 }
 
@@ -478,15 +541,11 @@ onBeforeUnmount(stopPolling)
   grid-column: span 2;
 }
 
-.status-label {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-}
-
 .status-value {
   font-size: 14px;
   line-height: 1.6;
   color: var(--el-text-color-primary);
+  word-break: break-word;
 }
 
 .status-error {
@@ -495,10 +554,6 @@ onBeforeUnmount(stopPolling)
 
 .break-all {
   word-break: break-all;
-}
-
-.diagnosis-block {
-  margin-top: 16px;
 }
 
 .diagnosis-alert {
