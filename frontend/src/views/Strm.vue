@@ -114,7 +114,7 @@
       </div>
 
       <div class="config-actions">
-        <el-button type="warning" :loading="generatingDefault" @click="generateDefaultFiles">默认生成</el-button>
+        <el-button type="warning" :loading="generatingDefault" @click="generateDefaultFiles">归档输出目录生成</el-button>
         <el-button type="primary" :disabled="!sourceDir.cid" :loading="generatingSource" @click="generateSourceFiles">指定源生成</el-button>
       </div>
 

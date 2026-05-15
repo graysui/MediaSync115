@@ -1,6 +1,6 @@
 <template>
   <el-config-provider :locale="zhCn">
-    <div v-if="isAuthChecking" class="auth-loading">
+    <div v-if="isAuthChecking && !isLoginRoute" class="auth-loading">
       <el-icon class="auth-loading-icon is-loading"><Loading /></el-icon>
       <span>正在验证登录状态...</span>
     </div>
@@ -113,7 +113,7 @@
         </header>
         <el-main class="app-main" :class="{ 'has-dock': isCompact }">
           <router-view v-slot="{ Component, route: currentRoute }">
-            <transition name="page-fade" mode="out-in">
+            <transition name="page-fade">
               <component :is="Component" :key="currentRoute.fullPath" />
             </transition>
           </router-view>
@@ -126,6 +126,7 @@
       <button
         v-for="tab in dockTabs"
         :key="tab.key"
+        type="button"
         class="dock-tab"
         :class="{ active: tab.active }"
         @click="handleDockTab(tab)"
@@ -145,23 +146,23 @@
               <span class="more-sheet-title">更多操作</span>
             </div>
             <div class="more-sheet-body">
-              <button class="more-item" @click="handleMoreNav('/settings')">
+              <button type="button" class="more-item" @click="handleMoreNav('/settings')">
                 <el-icon><Setting /></el-icon>
                 <span>设置</span>
               </button>
-              <button class="more-item" @click="handleMoreNav('/strm')">
+              <button type="button" class="more-item" @click="handleMoreNav('/strm')">
                 <el-icon><Link /></el-icon>
                 <span>STRM 管理</span>
               </button>
-              <button class="more-item" @click="handleMoreNav('/logs')">
+              <button type="button" class="more-item" @click="handleMoreNav('/logs')">
                 <el-icon><Document /></el-icon>
                 <span>日志</span>
               </button>
-              <button class="more-item" @click="handleMoreNav('/scheduler')">
+              <button type="button" class="more-item" @click="handleMoreNav('/scheduler')">
                 <el-icon><Clock /></el-icon>
                 <span>调度任务</span>
               </button>
-              <button class="more-item" @click="handleMoreNav('/workflow')">
+              <button type="button" class="more-item" @click="handleMoreNav('/workflow')">
                 <el-icon><Operation /></el-icon>
                 <span>工作流</span>
               </button>
@@ -175,12 +176,12 @@
                   <el-radio-button label="dark">深色</el-radio-button>
                 </el-radio-group>
               </div>
-              <button class="more-item more-logout" @click="handleMoreLogout">
+              <button type="button" class="more-item more-logout" @click="handleMoreLogout">
                 <el-icon><SwitchButton /></el-icon>
                 <span>退出登录</span>
               </button>
             </div>
-            <button class="more-cancel" @click="showMoreMenu = false">取消</button>
+            <button type="button" class="more-cancel" @click="showMoreMenu = false">取消</button>
           </div>
         </div>
       </transition>
@@ -196,6 +197,7 @@
             </div>
             <div class="more-sheet-body">
               <button
+                type="button"
                 class="more-item"
                 :class="{ 'more-item-active': lastExplorePage === '/explore/douban' }"
                 @click="handleExploreNav('/explore/douban')"
@@ -204,6 +206,7 @@
                 <span>豆瓣榜单</span>
               </button>
               <button
+                type="button"
                 class="more-item"
                 :class="{ 'more-item-active': lastExplorePage === '/explore/tmdb' }"
                 @click="handleExploreNav('/explore/tmdb')"
@@ -212,7 +215,7 @@
                 <span>TMDB 榜单</span>
               </button>
             </div>
-            <button class="more-cancel" @click="showExploreMenu = false">取消</button>
+            <button type="button" class="more-cancel" @click="showExploreMenu = false">取消</button>
           </div>
         </div>
       </transition>

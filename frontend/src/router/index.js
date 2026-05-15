@@ -1,5 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { authApi, isBackendUnavailableError, waitForBackendReady } from '@/api'
+import ArchiveView from '@/views/Archive.vue'
+import StrmView from '@/views/Strm.vue'
 
 const routes = [
   {
@@ -43,12 +45,12 @@ const routes = [
   {
     path: '/archive',
     name: 'Archive',
-    component: () => import('@/views/Archive.vue')
+    component: ArchiveView
   },
   {
     path: '/strm',
     name: 'Strm',
-    component: () => import('@/views/Strm.vue')
+    component: StrmView
   },
   {
     path: '/subscription-logs',
