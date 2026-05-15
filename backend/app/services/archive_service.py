@@ -4,6 +4,7 @@ import re
 from datetime import datetime
 from typing import Any
 
+from jinja2 import Environment, StrictUndefined
 from sqlalchemy import delete, func, select
 
 from app.core.database import async_session_maker
@@ -95,6 +96,8 @@ class _AuthExpiredError(Exception):
 
 class ArchiveService:
     """归档刮削服务 - 参考 QMediaSync 流程重构"""
+
+    _jinja_env = Environment(undefined=StrictUndefined, autoescape=False)
 
     def __init__(self) -> None:
         self._scan_lock = asyncio.Lock()
@@ -505,8 +508,7 @@ class ArchiveService:
         )
 
         try:
-            genre_name = str(matched.get("genre_name") or "其他")
-            region_name = str(matched.get("region_name") or MOVIE_REGION_DEFAULT)
+            region_name = self._classify_matched(parsed, matched)
             title = str(matched.get("title") or parsed["query_title"])
             year = str(matched.get("year") or parsed.get("year") or "")
             title_folder = f"{title} ({year})" if year else title
@@ -521,7 +523,20 @@ class ArchiveService:
                     folder_cache=folder_cache,
                 )
                 season = int(parsed.get("season") or 1)
-                target_desc = f"剧集/{region_name}/{title_folder}/第{season}季"
+                naming = runtime_settings_service.get_archive_naming()
+                season_dir = self._render_template(
+                    naming.get("season_dir_template", ""),
+                    self._build_template_context(parsed, matched, ""),
+                    runtime_settings_service._DEFAULT_ARCHIVE_NAMING[
+                        "season_dir_template"
+                    ],
+                )
+                target_desc = self._join_target_desc(
+                    naming.get("tv_root_dir", "剧集"),
+                    region_name,
+                    title_folder,
+                    season_dir,
+                )
             else:
                 target_cid = await self._ensure_movie_path(
                     pan115,
@@ -530,7 +545,12 @@ class ArchiveService:
                     title_folder,
                     folder_cache=folder_cache,
                 )
-                target_desc = f"电影/{region_name}/{title_folder}"
+                naming = runtime_settings_service.get_archive_naming()
+                target_desc = self._join_target_desc(
+                    naming.get("movie_root_dir", "电影"),
+                    region_name,
+                    title_folder,
+                )
 
             await self._update_task(
                 db_task.id,
@@ -622,8 +642,7 @@ class ArchiveService:
             if not matched:
                 raise ValueError("TMDB 未匹配到可用结果")
 
-            genre_name = str(matched.get("genre_name") or "其他")
-            region_name = str(matched.get("region_name") or MOVIE_REGION_DEFAULT)
+            region_name = self._classify_matched(parsed, matched)
             title = str(matched.get("title") or parsed["query_title"])
             year = str(matched.get("year") or parsed.get("year") or "")
             title_folder = f"{title} ({year})" if year else title
@@ -638,7 +657,20 @@ class ArchiveService:
                     folder_cache=folder_cache,
                 )
                 season = int(parsed.get("season") or 1)
-                target_desc = f"剧集/{region_name}/{title_folder}/第{season}季"
+                naming = runtime_settings_service.get_archive_naming()
+                season_dir = self._render_template(
+                    naming.get("season_dir_template", ""),
+                    self._build_template_context(parsed, matched, ""),
+                    runtime_settings_service._DEFAULT_ARCHIVE_NAMING[
+                        "season_dir_template"
+                    ],
+                )
+                target_desc = self._join_target_desc(
+                    naming.get("tv_root_dir", "剧集"),
+                    region_name,
+                    title_folder,
+                    season_dir,
+                )
             else:
                 target_cid = await self._ensure_movie_path(
                     pan115,
@@ -647,7 +679,12 @@ class ArchiveService:
                     title_folder,
                     folder_cache=folder_cache,
                 )
-                target_desc = f"电影/{region_name}/{title_folder}"
+                naming = runtime_settings_service.get_archive_naming()
+                target_desc = self._join_target_desc(
+                    naming.get("movie_root_dir", "电影"),
+                    region_name,
+                    title_folder,
+                )
 
             await self._update_task(
                 db_task.id,
@@ -725,9 +762,8 @@ class ArchiveService:
     #  参考QMediaSync：重命名与字幕关联
     # ================================================================
 
-    @staticmethod
     def _build_target_filename(
-        parsed: dict[str, Any], matched: dict[str, Any], original_filename: str
+        self, parsed: dict[str, Any], matched: dict[str, Any], original_filename: str
     ) -> str:
         title = str(matched.get("title") or parsed.get("query_title") or "")
         year = str(matched.get("year") or parsed.get("year") or "")
@@ -737,15 +773,33 @@ class ArchiveService:
         if not title:
             return original_filename
 
+        naming = runtime_settings_service.get_archive_naming()
+        context = self._build_template_context(parsed, matched, ext, title=title)
         if parsed["media_type"] == "tv":
-            season = int(parsed.get("season") or 1)
-            return (
-                f"{title} ({year}) - S{season:02d}E{parsed.get('episode', 1):02d}{ext}"
-                if year
-                else f"{title} - S{season:02d}E{parsed.get('episode', 1):02d}{ext}"
+            template = naming.get("tv_filename_template", "")
+            fallback_template = (
+                runtime_settings_service._DEFAULT_ARCHIVE_NAMING[
+                    "tv_filename_template"
+                ]
             )
+            if not year and template == fallback_template:
+                season = int(parsed.get("season") or 1)
+                episode = int(parsed.get("episode") or 1)
+                return f"{title} - S{season:02d}E{episode:02d}{ext}"
+            filename = self._render_template(template, context, fallback_template)
         else:
-            return f"{title} ({year}){ext}" if year else f"{title}{ext}"
+            template = naming.get("movie_filename_template", "")
+            fallback_template = (
+                runtime_settings_service._DEFAULT_ARCHIVE_NAMING[
+                    "movie_filename_template"
+                ]
+            )
+            if not year and template == fallback_template:
+                return f"{title}{ext}"
+            filename = self._render_template(template, context, fallback_template)
+
+        filename = re.sub(r'[\\/:*?"<>|]', "", str(filename or "")).strip()
+        return filename or original_filename
 
     async def _move_subtitles(
         self,
@@ -888,13 +942,21 @@ class ArchiveService:
         title_folder: str,
         folder_cache: dict[tuple[str, ...], str] | None = None,
     ) -> str:
-        cache_key = ("movie", str(root_cid), str(region), str(title_folder))
+        naming = runtime_settings_service.get_archive_naming()
+        movie_root_dir = str(naming.get("movie_root_dir") or "电影").strip() or "电影"
+        category = str(region or "").strip()
+        path_parts = [movie_root_dir]
+        if category:
+            path_parts.append(category)
+        path_parts.append(str(title_folder))
+
+        cache_key = ("movie", str(root_cid), *path_parts)
         if folder_cache and cache_key in folder_cache:
             return folder_cache[cache_key]
 
-        movies_cid = await pan115.get_or_create_folder(root_cid, "电影")
-        region_cid = await pan115.get_or_create_folder(movies_cid, region)
-        folder_cid = await pan115.get_or_create_folder(region_cid, title_folder)
+        folder_cid = str(root_cid)
+        for part in path_parts:
+            folder_cid = await pan115.get_or_create_folder(folder_cid, part)
         if folder_cache is not None:
             folder_cache[cache_key] = folder_cid
         return folder_cid
@@ -908,22 +970,26 @@ class ArchiveService:
         parsed: dict[str, Any],
         folder_cache: dict[tuple[str, ...], str] | None = None,
     ) -> str:
-        season = int(parsed.get("season") or 1)
-        cache_key = (
-            "tv",
-            str(root_cid),
-            str(genre),
-            str(title_folder),
-            f"S{season:02d}",
+        naming = runtime_settings_service.get_archive_naming()
+        tv_root_dir = str(naming.get("tv_root_dir") or "剧集").strip() or "剧集"
+        season_dir = self._render_template(
+            naming.get("season_dir_template", ""),
+            self._build_template_context(parsed, {}, ""),
+            runtime_settings_service._DEFAULT_ARCHIVE_NAMING["season_dir_template"],
         )
+        category = str(genre or "").strip()
+        path_parts = [tv_root_dir]
+        if category:
+            path_parts.append(category)
+        path_parts.extend([str(title_folder), season_dir])
+
+        cache_key = ("tv", str(root_cid), *path_parts)
         if folder_cache and cache_key in folder_cache:
             return folder_cache[cache_key]
 
-        tv_cid = await pan115.get_or_create_folder(root_cid, "剧集")
-        genre_cid = await pan115.get_or_create_folder(tv_cid, genre)
-        title_cid = await pan115.get_or_create_folder(genre_cid, title_folder)
-        season_dir = f"第{season}季"
-        season_cid = await pan115.get_or_create_folder(title_cid, season_dir)
+        season_cid = str(root_cid)
+        for part in path_parts:
+            season_cid = await pan115.get_or_create_folder(season_cid, part)
         if folder_cache is not None:
             folder_cache[cache_key] = season_cid
         return season_cid
@@ -996,6 +1062,7 @@ class ArchiveService:
             "year": year_text,
             "genre_name": genre_name,
             "region_name": region_name,
+            "detail": detail,
         }
 
     # ---------- 文件名解析 ----------
@@ -1220,6 +1287,149 @@ class ArchiveService:
         text = text.replace(".", " ").replace("_", " ").replace("-", " ")
         text = re.sub(r"\s+", " ", text).strip()
         return text
+
+    @staticmethod
+    def _join_target_desc(*parts: str) -> str:
+        return "/".join(str(part or "").strip("/") for part in parts if str(part or "").strip())
+
+    @staticmethod
+    def _build_template_context(
+        parsed: dict[str, Any],
+        matched: dict[str, Any],
+        ext: str,
+        title: str | None = None,
+    ) -> dict[str, Any]:
+        year_value = matched.get("year") or parsed.get("year") or ""
+        tmdb_id = matched.get("tmdb_id")
+        try:
+            tmdb_id = int(tmdb_id) if tmdb_id is not None else 0
+        except Exception:
+            tmdb_id = 0
+        return {
+            "title": title or str(matched.get("title") or parsed.get("query_title") or ""),
+            "year": int(year_value) if str(year_value).isdigit() else str(year_value),
+            "tmdb_id": tmdb_id,
+            "season": int(parsed.get("season") or 1),
+            "episode": int(parsed.get("episode") or 1),
+            "ext": str(ext or ""),
+        }
+
+    def _render_template(
+        self,
+        template_str: str,
+        context: dict[str, Any],
+        fallback_template: str,
+    ) -> str:
+        try:
+            rendered = self._jinja_env.from_string(str(template_str or "")).render(**context)
+            rendered = str(rendered or "").strip()
+            if rendered:
+                return rendered
+        except Exception:
+            logger.warning("归档命名模板渲染失败，使用 fallback：%s", template_str)
+
+        if fallback_template == runtime_settings_service._DEFAULT_ARCHIVE_NAMING["movie_filename_template"] and not context.get("year"):
+            return f"{context.get('title', '')}{context.get('ext', '')}"
+        if fallback_template == runtime_settings_service._DEFAULT_ARCHIVE_NAMING["tv_filename_template"] and not context.get("year"):
+            return (
+                f"{context.get('title', '')} - "
+                f"S{int(context.get('season') or 1):02d}"
+                f"E{int(context.get('episode') or 1):02d}"
+                f"{context.get('ext', '')}"
+            )
+
+        try:
+            rendered = self._jinja_env.from_string(str(fallback_template or "")).render(**context)
+            return str(rendered or "").strip()
+        except Exception:
+            logger.warning("归档默认命名模板渲染失败：%s", fallback_template)
+        return ""
+
+    def _classify_matched(self, parsed: dict[str, Any], matched: dict[str, Any]) -> str:
+        classification = runtime_settings_service.get_archive_classification()
+        detail = matched.get("detail") if isinstance(matched.get("detail"), dict) else {}
+        media_type = str(parsed.get("media_type") or matched.get("media_type") or "movie")
+        if media_type == "tv":
+            return self._classify_by_rules(
+                detail,
+                classification.get("tv_rules", []),
+                fallback=str(matched.get("region_name") or ""),
+            )
+        return self._classify_by_rules(
+            detail,
+            classification.get("movie_rules", []),
+            fallback=str(matched.get("region_name") or ""),
+        )
+
+    def _classify_by_rules(
+        self,
+        detail: dict[str, Any],
+        rules: list[dict[str, Any]],
+        fallback: str = "",
+    ) -> str:
+        if not isinstance(rules, list) or not rules:
+            return ""
+
+        genre_ids = self._extract_genre_ids(detail)
+        countries = self._extract_country_codes(detail)
+        default_name = ""
+
+        for rule in rules:
+            if not isinstance(rule, dict):
+                continue
+            name = str(rule.get("name") or "").strip()
+            match_type = str(rule.get("match_type") or "").strip().lower()
+            values = rule.get("values") if isinstance(rule.get("values"), list) else []
+            if not name:
+                continue
+            if match_type == "default":
+                if not default_name:
+                    default_name = name
+                continue
+            if match_type == "genre":
+                rule_genres = set()
+                for value in values:
+                    try:
+                        rule_genres.add(int(value))
+                    except Exception:
+                        continue
+                if genre_ids.intersection(rule_genres):
+                    return name
+            elif match_type == "country":
+                rule_countries = {str(value or "").strip().upper() for value in values}
+                if countries.intersection(rule_countries):
+                    return name
+
+        return default_name or str(fallback or "").strip()
+
+    @staticmethod
+    def _extract_genre_ids(detail: dict[str, Any]) -> set[int]:
+        genres = detail.get("genres") if isinstance(detail.get("genres"), list) else []
+        ids: set[int] = set()
+        for genre in genres:
+            if isinstance(genre, dict):
+                try:
+                    ids.add(int(genre.get("id")))
+                except Exception:
+                    continue
+        return ids
+
+    @staticmethod
+    def _extract_country_codes(detail: dict[str, Any]) -> set[str]:
+        countries: set[str] = set()
+        origin_country = detail.get("origin_country")
+        if isinstance(origin_country, list):
+            countries.update(str(country or "").strip().upper() for country in origin_country)
+        elif isinstance(origin_country, str):
+            countries.add(origin_country.strip().upper())
+
+        production_countries = detail.get("production_countries")
+        if isinstance(production_countries, list):
+            for country in production_countries:
+                if isinstance(country, dict):
+                    countries.add(str(country.get("iso_3166_1") or "").strip().upper())
+
+        return {country for country in countries if country}
 
     @staticmethod
     def _extract_genre_name(detail: dict[str, Any], media_type: str) -> str:

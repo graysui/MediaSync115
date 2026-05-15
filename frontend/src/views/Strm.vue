@@ -121,8 +121,8 @@
 
       <div class="status-grid">
         <div class="status-item">
-          <span class="status-label">归档输出目录</span>
-          <span class="status-value">{{ config.archive_output_name || config.archive_output_cid || '未配置' }}</span>
+          <span class="status-label">STRM 输出目录</span>
+          <span class="status-value">{{ config.strm_output_dir || '未配置' }}</span>
         </div>
         <div class="status-item">
           <span class="status-label">临时源目录</span>

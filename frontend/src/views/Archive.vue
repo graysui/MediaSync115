@@ -67,6 +67,135 @@
 
     <el-card class="section-card">
       <template #header>
+        <div class="card-title-row">
+          <div class="card-title">命名模板</div>
+          <el-button type="primary" :loading="namingSaving" @click="saveNaming">保存命名</el-button>
+        </div>
+      </template>
+
+      <el-form label-width="140px" class="config-form">
+        <div class="config-grid">
+          <el-form-item label="电影根目录">
+            <el-input v-model="namingConfig.movie_root_dir" />
+            <div class="form-hint">示例：{{ namingPreview.movieRoot }}</div>
+          </el-form-item>
+          <el-form-item label="剧集根目录">
+            <el-input v-model="namingConfig.tv_root_dir" />
+            <div class="form-hint">示例：{{ namingPreview.tvRoot }}</div>
+          </el-form-item>
+          <el-form-item label="季目录模板">
+            <el-input v-model="namingConfig.season_dir_template" />
+            <div class="form-hint">变量：season。预览：{{ namingPreview.seasonDir }}</div>
+          </el-form-item>
+          <el-form-item label="电影文件模板">
+            <el-input v-model="namingConfig.movie_filename_template" />
+            <div class="form-hint">变量：title、year、tmdb_id、ext。预览：{{ namingPreview.movieFile }}</div>
+          </el-form-item>
+          <el-form-item label="剧集文件模板" class="grid-span-2">
+            <el-input v-model="namingConfig.tv_filename_template" />
+            <div class="form-hint">变量：title、year、tmdb_id、season、episode、ext。预览：{{ namingPreview.tvFile }}</div>
+          </el-form-item>
+        </div>
+      </el-form>
+    </el-card>
+
+    <el-card class="section-card">
+      <template #header>
+        <div class="card-title-row">
+          <div class="card-title">分类规则</div>
+          <el-button type="primary" :loading="classificationSaving" @click="saveClassification">保存规则</el-button>
+        </div>
+      </template>
+
+      <el-tabs v-model="classificationTab">
+        <el-tab-pane label="电影" name="movie">
+          <div class="rules-toolbar">
+            <el-button size="small" type="primary" @click="addRule('movie')">新增电影规则</el-button>
+          </div>
+          <draggable
+            v-model="classificationConfig.movie_rules"
+            item-key="_key"
+            handle=".drag-handle"
+            class="rules-list"
+          >
+            <template #item="{ element, index }">
+              <div class="rule-row">
+                <span class="drag-handle">拖动</span>
+                <el-input v-model="element.name" placeholder="分类目录名" class="rule-name" />
+                <el-select v-model="element.match_type" class="rule-type" @change="handleRuleTypeChange(element)">
+                  <el-option label="类型" value="genre" />
+                  <el-option label="国家/地区" value="country" />
+                  <el-option label="兜底" value="default" />
+                </el-select>
+                <el-select
+                  v-if="element.match_type !== 'default'"
+                  v-model="element.values"
+                  multiple
+                  filterable
+                  collapse-tags
+                  class="rule-values"
+                  placeholder="选择匹配值"
+                >
+                  <el-option
+                    v-for="option in getRuleOptions('movie', element.match_type)"
+                    :key="option.value"
+                    :label="option.label"
+                    :value="option.value"
+                  />
+                </el-select>
+                <span v-else class="rule-values muted-text">第一个兜底规则会在其他规则未命中时生效</span>
+                <el-button type="danger" text @click="removeRule('movie', index)">删除</el-button>
+              </div>
+            </template>
+          </draggable>
+        </el-tab-pane>
+
+        <el-tab-pane label="剧集" name="tv">
+          <div class="rules-toolbar">
+            <el-button size="small" type="primary" @click="addRule('tv')">新增剧集规则</el-button>
+          </div>
+          <draggable
+            v-model="classificationConfig.tv_rules"
+            item-key="_key"
+            handle=".drag-handle"
+            class="rules-list"
+          >
+            <template #item="{ element, index }">
+              <div class="rule-row">
+                <span class="drag-handle">拖动</span>
+                <el-input v-model="element.name" placeholder="分类目录名" class="rule-name" />
+                <el-select v-model="element.match_type" class="rule-type" @change="handleRuleTypeChange(element)">
+                  <el-option label="类型" value="genre" />
+                  <el-option label="国家/地区" value="country" />
+                  <el-option label="兜底" value="default" />
+                </el-select>
+                <el-select
+                  v-if="element.match_type !== 'default'"
+                  v-model="element.values"
+                  multiple
+                  filterable
+                  collapse-tags
+                  class="rule-values"
+                  placeholder="选择匹配值"
+                >
+                  <el-option
+                    v-for="option in getRuleOptions('tv', element.match_type)"
+                    :key="option.value"
+                    :label="option.label"
+                    :value="option.value"
+                  />
+                </el-select>
+                <span v-else class="rule-values muted-text">第一个兜底规则会在其他规则未命中时生效</span>
+                <el-button type="danger" text @click="removeRule('tv', index)">删除</el-button>
+              </div>
+            </template>
+          </draggable>
+        </el-tab-pane>
+      </el-tabs>
+    </el-card>
+
+    <el-card class="section-card">
+      <template #header>
         <div class="card-title">运行状态</div>
       </template>
 
@@ -216,11 +345,15 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import draggable from 'vuedraggable'
 import { archiveApi, pan115Api } from '@/api'
+import { TMDB_COUNTRIES, TMDB_MOVIE_GENRES, TMDB_TV_GENRES } from '@/utils/tmdb_constants'
 import { formatBeijingTableCell } from '@/utils/timezone'
 
 const refreshing = ref(false)
 const saving = ref(false)
+const namingSaving = ref(false)
+const classificationSaving = ref(false)
 const scanLoading = ref(false)
 const tasksLoading = ref(false)
 const total = ref(0)
@@ -247,6 +380,21 @@ const runtime = reactive({
   last_scan_summary: null,
   last_scan_error: ''
 })
+
+const namingConfig = reactive({
+  movie_root_dir: '电影',
+  tv_root_dir: '剧集',
+  season_dir_template: '第{{ season }}季',
+  movie_filename_template: '{{ title }} ({{ year }}){{ ext }}',
+  tv_filename_template: "{{ title }} ({{ year }}) - S{{ '%02d' % season }}E{{ '%02d' % episode }}{{ ext }}"
+})
+
+const classificationConfig = reactive({
+  movie_rules: [],
+  tv_rules: []
+})
+const classificationTab = ref('movie')
+let ruleKeySeed = 1
 
 const filters = reactive({
   status: '',
@@ -296,6 +444,125 @@ const scanSummaryText = computed(() => {
   return `总计 ${Number(summary.total || 0)} 个，成功 ${Number(summary.success || 0)} 个，跳过 ${Number(summary.skipped || 0)} 个，失败 ${Number(summary.failed || 0)} 个`
 })
 
+const renderTemplatePreview = (template, context) => {
+  let rendered = String(template || '')
+  rendered = rendered.replace(/{{\s*'%02d'\s*%\s*season\s*}}/g, String(context.season).padStart(2, '0'))
+  rendered = rendered.replace(/{{\s*'%02d'\s*%\s*episode\s*}}/g, String(context.episode).padStart(2, '0'))
+  Object.entries(context).forEach(([key, value]) => {
+    rendered = rendered.replace(new RegExp(`{{\\s*${key}\\s*}}`, 'g'), String(value))
+  })
+  return rendered
+}
+
+const namingPreview = computed(() => {
+  const context = {
+    title: '示例影片',
+    year: 2026,
+    tmdb_id: 12345,
+    season: 1,
+    episode: 2,
+    ext: '.mkv'
+  }
+  return {
+    movieRoot: namingConfig.movie_root_dir || '电影',
+    tvRoot: namingConfig.tv_root_dir || '剧集',
+    seasonDir: renderTemplatePreview(namingConfig.season_dir_template, context),
+    movieFile: renderTemplatePreview(namingConfig.movie_filename_template, context),
+    tvFile: renderTemplatePreview(namingConfig.tv_filename_template, context)
+  }
+})
+
+const withRuleKeys = (rules) => (Array.isArray(rules) ? rules : []).map(rule => ({
+  _key: rule._key || `rule-${ruleKeySeed++}`,
+  name: rule.name || '',
+  match_type: ['genre', 'country', 'default'].includes(rule.match_type) ? rule.match_type : 'default',
+  values: Array.isArray(rule.values) ? [...rule.values] : []
+}))
+
+const serializeRules = (rules) => (Array.isArray(rules) ? rules : [])
+  .map(rule => ({
+    name: String(rule.name || '').trim(),
+    match_type: rule.match_type,
+    values: rule.match_type === 'default' ? [] : [...(rule.values || [])]
+  }))
+  .filter(rule => rule.name && ['genre', 'country', 'default'].includes(rule.match_type))
+
+const getRuleOptions = (mediaType, matchType) => {
+  if (matchType === 'country') {
+    return TMDB_COUNTRIES.map(item => ({ label: `${item.label} (${item.code})`, value: item.code }))
+  }
+  const genres = mediaType === 'movie' ? TMDB_MOVIE_GENRES : TMDB_TV_GENRES
+  return genres.map(item => ({ label: `${item.label} (${item.id})`, value: item.id }))
+}
+
+const handleRuleTypeChange = (rule) => {
+  rule.values = []
+}
+
+const addRule = (type) => {
+  const rules = type === 'movie' ? classificationConfig.movie_rules : classificationConfig.tv_rules
+  rules.push({
+    _key: `rule-${ruleKeySeed++}`,
+    name: '',
+    match_type: 'default',
+    values: []
+  })
+}
+
+const removeRule = (type, index) => {
+  const rules = type === 'movie' ? classificationConfig.movie_rules : classificationConfig.tv_rules
+  rules.splice(index, 1)
+}
+
+const loadNaming = async () => {
+  const { data } = await archiveApi.getNaming()
+  namingConfig.movie_root_dir = data.movie_root_dir || '电影'
+  namingConfig.tv_root_dir = data.tv_root_dir || '剧集'
+  namingConfig.season_dir_template = data.season_dir_template || '第{{ season }}季'
+  namingConfig.movie_filename_template = data.movie_filename_template || '{{ title }} ({{ year }}){{ ext }}'
+  namingConfig.tv_filename_template = data.tv_filename_template || "{{ title }} ({{ year }}) - S{{ '%02d' % season }}E{{ '%02d' % episode }}{{ ext }}"
+}
+
+const loadClassification = async () => {
+  const { data } = await archiveApi.getClassification()
+  classificationConfig.movie_rules = withRuleKeys(data.movie_rules)
+  classificationConfig.tv_rules = withRuleKeys(data.tv_rules)
+}
+
+const saveNaming = async () => {
+  namingSaving.value = true
+  try {
+    await archiveApi.updateNaming({
+      movie_root_dir: namingConfig.movie_root_dir,
+      tv_root_dir: namingConfig.tv_root_dir,
+      season_dir_template: namingConfig.season_dir_template,
+      movie_filename_template: namingConfig.movie_filename_template,
+      tv_filename_template: namingConfig.tv_filename_template
+    })
+    ElMessage.success('命名模板已保存')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '命名模板保存失败')
+  } finally {
+    namingSaving.value = false
+  }
+}
+
+const saveClassification = async () => {
+  classificationSaving.value = true
+  try {
+    await archiveApi.updateClassification({
+      movie_rules: serializeRules(classificationConfig.movie_rules),
+      tv_rules: serializeRules(classificationConfig.tv_rules)
+    })
+    ElMessage.success('分类规则已保存')
+    await loadClassification()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '分类规则保存失败')
+  } finally {
+    classificationSaving.value = false
+  }
+}
+
 const loadConfig = async () => {
   const { data } = await archiveApi.getConfig()
   config.archive_enabled = !!data.archive_enabled
@@ -329,7 +596,7 @@ const loadTasks = async () => {
 const refreshAll = async () => {
   refreshing.value = true
   try {
-    await Promise.all([loadConfig(), loadTasks()])
+    await Promise.all([loadConfig(), loadNaming(), loadClassification(), loadTasks()])
   } catch {
     ElMessage.error('刷新归档信息失败')
   } finally {
@@ -346,7 +613,10 @@ const saveConfig = async () => {
       archive_watch_name: config.archive_watch_name,
       archive_output_cid: config.archive_output_cid,
       archive_output_name: config.archive_output_name,
-      archive_interval_minutes: config.archive_interval_minutes
+      archive_interval_minutes: config.archive_interval_minutes,
+      archive_auto_on_transfer: config.archive_auto_on_transfer,
+      archive_auto_on_offline: config.archive_auto_on_offline,
+      offline_monitor_interval_minutes: config.offline_monitor_interval_minutes
     })
     ElMessage.success('归档配置已保存')
   } finally {
@@ -556,6 +826,13 @@ onBeforeUnmount(() => {
     gap: 12px;
   }
 
+  .card-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
   .section-card .card-title {
     font-weight: 600;
     color: var(--ms-text-primary);
@@ -632,6 +909,38 @@ onBeforeUnmount(() => {
     flex-wrap: wrap;
   }
 
+  .rules-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 12px;
+  }
+
+  .rules-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .rule-row {
+    display: grid;
+    grid-template-columns: 54px minmax(120px, 180px) 130px minmax(220px, 1fr) 64px;
+    gap: 10px;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--el-border-color-lighter);
+  }
+
+  .drag-handle {
+    cursor: move;
+    color: var(--ms-text-secondary);
+    font-size: 12px;
+    user-select: none;
+  }
+
+  .rule-values {
+    min-width: 0;
+  }
+
   .status-filter { width: 140px; }
   .table-wrap { overflow-x: auto; }
 
@@ -665,6 +974,7 @@ onBeforeUnmount(() => {
     .header-actions, .tasks-toolbar { width: 100%; }
     .config-form .config-grid, .status-grid { grid-template-columns: 1fr; }
     .config-form .grid-span-2 { grid-column: span 1; }
+    .rule-row { grid-template-columns: 1fr; }
     .table-wrap .el-table { min-width: 980px; }
   }
 }

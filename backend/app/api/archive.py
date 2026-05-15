@@ -1,6 +1,7 @@
-from typing import Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from jinja2 import Environment
 from pydantic import BaseModel
 
 from app.services.archive_scheduler_service import archive_scheduler_service
@@ -9,6 +10,26 @@ from app.services.pan115_service import Pan115Service
 from app.services.runtime_settings_service import runtime_settings_service
 
 router = APIRouter(prefix="/archive", tags=["archive"])
+_jinja_env = Environment()
+
+
+def _validate_jinja2_templates(updates: dict[str, Any]) -> None:
+    template_fields = {
+        "season_dir_template",
+        "movie_filename_template",
+        "tv_filename_template",
+    }
+    for field in template_fields:
+        value = updates.get(field)
+        if not value:
+            continue
+        try:
+            _jinja_env.parse(str(value))
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"字段 {field} 模板语法错误：{exc}",
+            )
 
 
 def _raise_archive_115_error(exc: Exception) -> None:
@@ -44,6 +65,25 @@ class ArchiveConfigRequest(BaseModel):
 
     class Config:
         extra = "allow"
+
+
+class ArchiveNamingConfig(BaseModel):
+    movie_root_dir: Optional[str] = None
+    tv_root_dir: Optional[str] = None
+    season_dir_template: Optional[str] = None
+    movie_filename_template: Optional[str] = None
+    tv_filename_template: Optional[str] = None
+
+
+class ClassificationRule(BaseModel):
+    name: str
+    match_type: Literal["genre", "country", "default"]
+    values: list[Any] = []
+
+
+class ArchiveClassificationConfig(BaseModel):
+    movie_rules: Optional[list[ClassificationRule]] = None
+    tv_rules: Optional[list[ClassificationRule]] = None
 
 
 @router.get("/config")
@@ -172,3 +212,31 @@ async def retry_archive_task(task_id: int):
 async def clear_archive_tasks(include_failed: bool = False):
     removed = await archive_service.clear_tasks(include_failed=include_failed)
     return {"success": True, "removed": removed}
+
+
+@router.get("/naming")
+async def get_archive_naming():
+    return runtime_settings_service.get_archive_naming()
+
+
+@router.put("/naming")
+async def update_archive_naming(payload: ArchiveNamingConfig):
+    updates = payload.model_dump(exclude_unset=True)
+    _validate_jinja2_templates(updates)
+    return runtime_settings_service.update_archive_naming(updates)
+
+
+@router.get("/classification")
+async def get_archive_classification():
+    return runtime_settings_service.get_archive_classification()
+
+
+@router.put("/classification")
+async def update_archive_classification(payload: ArchiveClassificationConfig):
+    updates = payload.model_dump(exclude_unset=True)
+    serialized: dict[str, Any] = {}
+    if "movie_rules" in updates and updates["movie_rules"] is not None:
+        serialized["movie_rules"] = updates["movie_rules"]
+    if "tv_rules" in updates and updates["tv_rules"] is not None:
+        serialized["tv_rules"] = updates["tv_rules"]
+    return runtime_settings_service.update_archive_classification(serialized)

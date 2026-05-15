@@ -2,6 +2,7 @@ import json
 import os
 import secrets
 import hashlib
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 

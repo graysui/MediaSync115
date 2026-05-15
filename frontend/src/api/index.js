@@ -269,6 +269,10 @@ export const logsApi = {
 export const archiveApi = {
   getConfig: () => api.get('/archive/config'),
   updateConfig: (payload) => api.put('/archive/config', payload),
+  getNaming: () => api.get('/archive/naming'),
+  updateNaming: (payload) => api.put('/archive/naming', payload),
+  getClassification: () => api.get('/archive/classification'),
+  updateClassification: (payload) => api.put('/archive/classification', payload),
   listFolders: (cid = '0') => api.get('/archive/folders', { params: { cid } }),
   listTasks: (params) => api.get('/archive/tasks', { params }),
   runScan: () => api.post('/archive/scan', null, { timeout: 300000 }),
