@@ -1,5 +1,6 @@
 import json
 import logging
+import asyncio
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -26,11 +27,13 @@ SENSITIVE_KEYWORDS = (
 )
 MAX_SUMMARY_CHARS = 4000
 MAX_DEPTH = 4
+LOG_WRITE_TIMEOUT_SECONDS = 2.0
 
 
 class OperationLogService:
     def __init__(self) -> None:
         self._last_pruned_at: datetime | None = None
+        self._prune_lock = asyncio.Lock()
 
     @staticmethod
     def _trim_text(text: str) -> str:
@@ -132,10 +135,15 @@ class OperationLogService:
             response_summary=self.redact_payload(response_summary),
             extra=self.redact_payload(extra),
         )
-        async with async_session_maker() as db:
-            db.add(row)
-            await db.commit()
-        await self.maybe_prune()
+        try:
+            await asyncio.wait_for(
+                self._write_row(row),
+                timeout=LOG_WRITE_TIMEOUT_SECONDS,
+            )
+            await self.maybe_prune()
+        except Exception as exc:
+            logger.warning("operation log write skipped: %s", exc)
+            return
 
         # 发送到 Kafka（异步，不阻塞主线程）
         self._send_to_kafka(
@@ -151,6 +159,11 @@ class OperationLogService:
             duration_ms,
             extra,
         )
+
+    async def _write_row(self, row: OperationLog) -> None:
+        async with async_session_maker() as db:
+            db.add(row)
+            await db.commit()
 
     def _send_to_kafka(
         self,
@@ -298,7 +311,9 @@ class OperationLogService:
                 delete(OperationLog).where(OperationLog.created_at < cutoff)
             )
             await db.commit()
-            return int(result.rowcount or 0)
+            pruned_count = int(result.rowcount or 0)
+        self._last_pruned_at = beijing_now()
+        return pruned_count
 
     async def clear(self) -> int:
         async with async_session_maker() as db:
@@ -313,8 +328,15 @@ class OperationLogService:
             minutes=max(1, interval_minutes)
         ):
             return
-        await self.prune(days=days)
-        self._last_pruned_at = now
+        if self._prune_lock.locked():
+            return
+        async with self._prune_lock:
+            now = beijing_now()
+            if self._last_pruned_at and now - self._last_pruned_at < timedelta(
+                minutes=max(1, interval_minutes)
+            ):
+                return
+            await self.prune(days=days)
 
 
 operation_log_service = OperationLogService()
