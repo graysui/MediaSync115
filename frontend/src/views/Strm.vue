@@ -107,14 +107,15 @@
         </div>
 
         <div class="source-row">
-          <el-input v-model="sourceDir.name" placeholder="目录名称" class="source-name" @change="persistSourceDir" />
-          <el-input v-model="sourceDir.cid" placeholder="目录 CID" class="source-cid" @change="persistSourceDir" />
+          <el-tag v-if="sourceDir.cid" closable type="info" @close="clearSourceDir">
+            {{ sourceDir.name || sourceDir.cid }}
+          </el-tag>
+          <el-button @click="openPicker">选择目录</el-button>
           <el-button :disabled="!sourceDir.cid" @click="clearSourceDir">清空</el-button>
         </div>
       </div>
 
       <div class="config-actions">
-        <el-button type="warning" :loading="generatingDefault" @click="generateDefaultFiles">归档输出目录生成</el-button>
         <el-button type="primary" :disabled="!sourceDir.cid" :loading="generatingSource" @click="generateSourceFiles">指定源生成</el-button>
       </div>
 
@@ -178,24 +179,75 @@
       </el-descriptions>
       <el-alert :closable="false" type="info" show-icon class="diagnosis-alert" :title="diagnosis.reason || '诊断完成'" :description="diagnosis.note || ''" />
     </el-card>
+
+    <el-dialog v-model="pickerVisible" title="选择 115 源目录" width="520px" :close-on-click-modal="false">
+      <div class="picker-breadcrumb">
+        <el-breadcrumb separator="/">
+          <el-breadcrumb-item v-for="crumb in pickerBreadcrumbs" :key="crumb.cid">
+            <a @click.prevent="navigatePicker(crumb.cid)">{{ getFolderDisplayName(crumb) }}</a>
+          </el-breadcrumb-item>
+        </el-breadcrumb>
+      </div>
+
+      <div class="picker-toolbar">
+        <el-button size="small" :loading="pickerCreating" @click="createPickerFolder">新建文件夹</el-button>
+      </div>
+
+      <el-table
+        :data="pickerFolders"
+        v-loading="pickerLoading"
+        size="small"
+        max-height="400px"
+        @row-click="handlePickerRowClick"
+      >
+        <el-table-column label="文件夹名称" min-width="300">
+          <template #default="{ row }">
+            <span>{{ getFolderDisplayName(row) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="cid" label="CID" width="120" show-overflow-tooltip />
+        <el-table-column label="操作" width="120">
+          <template #default="{ row }">
+            <el-button size="small" type="primary" text @click.stop="enterPickerFolder(row)">进入</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <template #footer>
+        <div class="picker-footer">
+          <span>当前目录 CID: {{ pickerCurrentCid }}</span>
+          <div>
+            <el-button @click="pickerVisible = false">取消</el-button>
+            <el-button type="primary" @click="confirmPicker">选择当前目录</el-button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
-import { strmApi } from '@/api'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { archiveApi, pan115Api, strmApi } from '@/api'
 import { formatBeijingTableCell } from '@/utils/timezone'
 
 const refreshing = ref(false)
 const saving = ref(false)
-const generatingDefault = ref(false)
 const generatingSource = ref(false)
 const diagnosing = ref(false)
 const mountPaths = ref([])
 const suggestedBaseUrl = ref('')
 const diagnosis = ref(null)
 let pollingTimer = null
+
+const pickerVisible = ref(false)
+const pickerFolders = ref([])
+const pickerLoading = ref(false)
+const pickerCreating = ref(false)
+const pickerCurrentCid = ref('0')
+const pickerHistory = ref([])
+const pickerBreadcrumbs = computed(() => [{ cid: '0', name: '根目录' }, ...pickerHistory.value])
 
 const sourceDir = reactive({
   cid: localStorage.getItem('mediasync115.strm.source_cid') || '',
@@ -232,7 +284,7 @@ const activeTaskText = computed(() => {
   if (task.mode === 'source') {
     return `指定源 ${task.source_name || task.source_cid || '-'}`
   }
-  return `默认生成 ${task.output_cid || '-'}` 
+  return `归档输出目录 ${task.output_cid || '-'}`
 })
 
 const summaryText = computed(() => {
@@ -263,7 +315,7 @@ const getProbeText = (probe) => {
 }
 
 const applyConfig = (data) => {
-  const wasGenerating = runtime.generate_running || generatingDefault.value || generatingSource.value
+  const wasGenerating = runtime.generate_running || generatingSource.value
 
   config.strm_enabled = !!data.strm_enabled
   config.strm_output_dir = data.strm_output_dir || ''
@@ -288,7 +340,6 @@ const applyConfig = (data) => {
   runtime.last_generate_summary = nextRuntime.last_generate_summary || null
   runtime.last_generate_trigger = nextRuntime.last_generate_trigger || ''
 
-  generatingDefault.value = runtime.generate_running && (!runtime.active_task || runtime.active_task.mode !== 'source')
   generatingSource.value = runtime.generate_running && runtime.active_task?.mode === 'source'
 
   if (wasGenerating && !runtime.generate_running) {
@@ -335,11 +386,6 @@ const saveConfig = async () => {
   }
 }
 
-const persistSourceDir = () => {
-  localStorage.setItem('mediasync115.strm.source_cid', sourceDir.cid || '')
-  localStorage.setItem('mediasync115.strm.source_name', sourceDir.name || '')
-}
-
 const clearSourceDir = () => {
   sourceDir.cid = ''
   sourceDir.name = ''
@@ -347,23 +393,13 @@ const clearSourceDir = () => {
   localStorage.removeItem('mediasync115.strm.source_name')
 }
 
-const generateDefaultFiles = async () => {
-  generatingDefault.value = true
-  try {
-    const { data } = await strmApi.generate()
-    ElMessage.success(data.message || '默认 STRM 任务已提交')
-    await loadConfig()
-  } finally {
-    generatingDefault.value = false
-  }
-}
-
 const generateSourceFiles = async () => {
   if (!sourceDir.cid) {
-    ElMessage.warning('请先填写指定源目录 CID')
+    ElMessage.warning('请先选择指定源目录')
     return
   }
-  persistSourceDir()
+  localStorage.setItem('mediasync115.strm.source_cid', sourceDir.cid || '')
+  localStorage.setItem('mediasync115.strm.source_name', sourceDir.name || '')
   generatingSource.value = true
   try {
     const { data } = await strmApi.generate({
@@ -375,6 +411,105 @@ const generateSourceFiles = async () => {
   } finally {
     generatingSource.value = false
   }
+}
+
+const getFolderDisplayName = (folder) => {
+  if (!folder || typeof folder !== 'object') return '-'
+  return String(
+    folder.name
+    || folder.n
+    || folder.fn
+    || folder.folder_name
+    || folder.file_name
+    || folder.cid
+    || '-'
+  ).trim() || '-'
+}
+
+const getCurrentFolderName = () => {
+  if (pickerCurrentCid.value === '0') return '根目录'
+  const found = pickerHistory.value.find(h => h.cid === pickerCurrentCid.value)
+  return getFolderDisplayName(found) || pickerCurrentCid.value
+}
+
+const openPicker = () => {
+  pickerCurrentCid.value = '0'
+  pickerHistory.value = []
+  pickerFolders.value = []
+  pickerVisible.value = true
+  loadPickerFolders('0')
+}
+
+const loadPickerFolders = async (cid) => {
+  pickerLoading.value = true
+  pickerCurrentCid.value = cid
+  try {
+    const { data } = await archiveApi.listFolders(cid)
+    pickerFolders.value = (Array.isArray(data?.folders) ? data.folders : []).map(folder => ({
+      cid: String(folder.cid || ''),
+      name: getFolderDisplayName(folder)
+    }))
+  } catch {
+    pickerFolders.value = []
+  } finally {
+    pickerLoading.value = false
+  }
+}
+
+const navigatePicker = (cid) => {
+  if (cid === pickerCurrentCid.value) return
+  const index = pickerHistory.value.findIndex(h => h.cid === cid)
+  if (index >= 0) pickerHistory.value = pickerHistory.value.slice(0, index)
+  else if (cid === '0') pickerHistory.value = []
+  loadPickerFolders(cid)
+}
+
+const handlePickerRowClick = (row) => {
+  enterPickerFolder(row)
+}
+
+const enterPickerFolder = (row) => {
+  const rowName = getFolderDisplayName(row)
+  const currentName = getCurrentFolderName()
+  if (pickerCurrentCid.value !== '0' && !pickerHistory.value.find(h => h.cid === pickerCurrentCid.value)) {
+    pickerHistory.value.push({ cid: pickerCurrentCid.value, name: currentName })
+  }
+  if (!pickerHistory.value.find(h => h.cid === row.cid)) {
+    pickerHistory.value.push({ cid: row.cid, name: rowName })
+  }
+  loadPickerFolders(row.cid)
+}
+
+const createPickerFolder = async () => {
+  try {
+    const { value } = await ElMessageBox.prompt('请输入新文件夹名称', '新建文件夹', {
+      confirmButtonText: '创建',
+      cancelButtonText: '取消',
+      inputPattern: /\S+/,
+      inputErrorMessage: '文件夹名称不能为空'
+    })
+
+    const folderName = String(value || '').trim()
+    if (!folderName) return
+
+    pickerCreating.value = true
+    await pan115Api.createFolder(pickerCurrentCid.value, folderName)
+    ElMessage.success(`已创建文件夹：${folderName}`)
+    await loadPickerFolders(pickerCurrentCid.value)
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+  } finally {
+    pickerCreating.value = false
+  }
+}
+
+const confirmPicker = () => {
+  sourceDir.cid = pickerCurrentCid.value
+  sourceDir.name = getCurrentFolderName()
+  localStorage.setItem('mediasync115.strm.source_cid', sourceDir.cid || '')
+  localStorage.setItem('mediasync115.strm.source_name', sourceDir.name || '')
+  pickerVisible.value = false
+  ElMessage.success('目录已选择')
 }
 
 const diagnoseStrm = async () => {
@@ -513,15 +648,6 @@ onBeforeUnmount(stopPolling)
   flex-wrap: wrap;
 }
 
-.source-name {
-  width: 200px;
-}
-
-.source-cid {
-  flex: 1;
-  min-width: 220px;
-}
-
 .status-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -558,6 +684,21 @@ onBeforeUnmount(stopPolling)
 
 .diagnosis-alert {
   margin-top: 12px;
+}
+
+.picker-breadcrumb {
+  margin-bottom: 12px;
+}
+
+.picker-toolbar {
+  margin-bottom: 12px;
+}
+
+.picker-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
 }
 
 @media (max-width: 900px) {
